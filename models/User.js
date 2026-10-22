@@ -42,7 +42,7 @@ const userSchema = new mongoose.Schema(
     name:           { type: String, required: true, trim: true },
     email:          { type: String, required: true, unique: true, lowercase: true },
     password:       { type: String, required: true, minlength: 6 },
-    phone:          { type: String, default: '' },
+    phone:          { type: String, required: true, default: '' },
     secondaryPhone: { type: String, default: '' },
     role:           { type: String, enum: ['user', 'admin', 'dealer'], default: 'user' },
     addresses:      { type: [addressSchema], validate: [v => v.length <= 10, 'Max 10 addresses'] },

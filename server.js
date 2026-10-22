@@ -26,6 +26,8 @@ import fulfillmentRoutes       from './routes/fulfillmentRoutes.js';
 import checkoutRoutes          from './routes/checkoutRoutes.js';
 import { releaseExpiredReservations } from './services/inventory/reservationService.js';
 import fulfillmentGroupRoutes  from './routes/fulfillmentGroupRoutes.js';
+import notifyRoutes from './routes/notifyRoutes.js';
+import dealerNotificationRoutes from './routes/dealerNotificationRoutes.js';
 
 dotenv.config();
 connectDB();
@@ -67,6 +69,8 @@ app.use('/api/fulfillment-nodes', fulfillmentNodeRoutes);
 app.use('/api/fulfillment',       fulfillmentRoutes);
 app.use('/api/checkout',          checkoutRoutes);
 app.use('/api/fulfillment-groups', fulfillmentGroupRoutes);
+app.use('/api/notify-me', notifyRoutes);
+app.use('/api/dealer-notifications', dealerNotificationRoutes);
 app.get('/', (_req, res) => res.json({ status: 'TVS AutoParts API is running ✅' }));
 app.use((_req, res) => res.status(404).json({ message: 'Route not found' }));
 app.use((err, _req, res, _next) => {

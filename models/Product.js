@@ -30,7 +30,7 @@ const productSchema = new mongoose.Schema(
     numReviews: { type: Number, default: 0 },
     reviews:    [reviewSchema],
 
-    stock:      { type: Number, default: 0 },
+    stock:      { type: Number, default: 0,required: true },
     color:      String,
     material:   String,
     partNumber: String,

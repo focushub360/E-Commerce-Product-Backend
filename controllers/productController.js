@@ -71,7 +71,7 @@ const parseArrayField = (value) => {
 // Product.stock is retained for legacy dealer/admin forms. Customer-facing
 // stock must come from the physical inventory rows, which are the source of
 // truth for dealer inventory. Sum available units across active locations.
-const withAvailableStock = async (products) => {
+export const withAvailableStock = async (products) => {
   if (!products.length) return products;
   const ids = products.map((product) => product._id);
   const stocks = await InventoryItem.aggregate([
@@ -88,6 +88,13 @@ const withAvailableStock = async (products) => {
       ] }] } },
     } },
   ]);
+// console.log("Inventory records and calculated stock:", stocks);
+//console.log("Product stock before inventory calculation:", products.map(p => ({
+  //  id: String(p._id),
+  //  stock: p.stock
+//})));
+
+
   const stockByProduct = new Map(stocks.map(({ _id, stock }) => [String(_id), stock]));
   return products.map((product) => ({
     ...product,
@@ -183,20 +190,30 @@ export const getProductsByCategory = async (req, res) => {
 };
 
 // ── GET /api/products/:id ─────────────────────────────────────────────
+
 export const getProductById = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id))
+    if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(400).json({ message: 'Invalid product ID' });
+    }
 
     const product = await Product.findById(req.params.id)
       .populate('reviews.user', 'name avatar')
       .populate('dealer', 'dealerId businessName');
 
-    if (!product) return res.status(404).json({ message: 'Product not found' });
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    console.log("Stock directly from Product query:", product.stock);
 
     product.viewCount = (product.viewCount || 0) + 1;
     await product.save();
+
     const [productWithStock] = await withAvailableStock([product.toObject()]);
+
+    console.log("Stock after withAvailableStock:", productWithStock?.stock);
+
     res.json(productWithStock);
   } catch (err) {
     console.error('[getProductById]', err);

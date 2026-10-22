@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { protect, dealerOrAdmin } from '../middleware/authMiddleware.js';
+// import { updateProductStock } from '../controllers/notifyController.js';
 import {
   getProducts,
   searchProducts,

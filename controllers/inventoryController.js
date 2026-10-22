@@ -5,6 +5,9 @@ import FulfillmentNode from '../models/FulfillmentNode.js';
 import InventoryItem from '../models/InventoryItem.js';
 import { withAvailableList } from '../services/inventory/inventoryUtils.js';
 import { runMigration } from '../services/inventory/migrationService.js';
+import { withAvailableStock } from './productController.js';
+import { notifyBackInStock } from './notifyController.js';
+import DealerNotification from '../models/DealerNotification.js';
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
 
@@ -240,64 +243,153 @@ export const getNodeInventory = async (req, res) => {
 };
 
 /* ── PUT /api/inventory/:id — update stock (no reservation logic yet) ── */
+
+
 export const updateInventory = async (req, res) => {
   try {
     const { error } = validateObjectId(req.params.id, 'inventory ID');
-    if (error) return res.status(400).json({ message: error });
+
+    if (error) {
+      return res.status(400).json({ message: error });
+    }
 
     const item = await InventoryItem.findById(req.params.id);
-    if (!item) return res.status(404).json({ message: 'Inventory not found' });
 
-    // Dealers may only update their own inventory.
-    if (isDealer(req) && item.dealer.toString() !== req.user._id.toString())
-      return res.status(403).json({ message: 'Not authorized to update this inventory' });
+    if (!item) {
+      return res.status(404).json({ message: 'Inventory not found' });
+    }
+
+    // Dealers may update only their own inventory.
+    if (
+      isDealer(req) &&
+      item.dealer.toString() !== req.user._id.toString()
+    ) {
+      return res.status(403).json({
+        message: 'Not authorized to update this inventory',
+      });
+    }
+
+    const productDoc = await Product.findById(item.product).lean();
+
+    if (!productDoc) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    // Calculate stock before the update.
+    const [beforeProduct] = await withAvailableStock([productDoc]);
+    const stockBefore = Number(beforeProduct?.stock ?? 0);
 
     const { onHand, damaged, blocked, isActive } = req.body;
 
-    // Only these fields are Phase-1 editable. `reserved` is intentionally
-    // not editable — reservation belongs to Phase 2.
     if (onHand !== undefined) {
       const r = assertQuantity(onHand, 'onHand');
-      if (!r.valid) return res.status(400).json({ message: r.error });
+      if (!r.valid) {
+        return res.status(400).json({ message: r.error });
+      }
       item.onHand = r.value;
     }
+
     if (damaged !== undefined) {
       const r = assertQuantity(damaged, 'damaged');
-      if (!r.valid) return res.status(400).json({ message: r.error });
+      if (!r.valid) {
+        return res.status(400).json({ message: r.error });
+      }
       item.damaged = r.value;
     }
+
     if (blocked !== undefined) {
       const r = assertQuantity(blocked, 'blocked');
-      if (!r.valid) return res.status(400).json({ message: r.error });
+      if (!r.valid) {
+        return res.status(400).json({ message: r.error });
+      }
       item.blocked = r.value;
     }
-    if (isActive !== undefined) item.isActive = isActive === true || isActive === 'true';
 
-    item.lastUpdatedAt = new Date();
-
-    try {
-      await item.save();
-    } catch (saveErr) {
-      if (saveErr.name === 'ValidationError') {
-        return res.status(400).json({ message: saveErr.message });
-      }
-      throw saveErr;
+    if (isActive !== undefined) {
+      item.isActive = isActive === true || isActive === 'true';
     }
 
-    res.json({
+    item.lastUpdatedAt = new Date();
+    await item.save();
+
+    // Reload product and recalculate using the saved inventory.
+    const freshProduct = await Product.findById(item.product).lean();
+    const [afterProduct] = await withAvailableStock([freshProduct]);
+    const stockAfter = Number(afterProduct?.stock ?? 0);
+
+    console.log('[INVENTORY]', {
+      productId: item.product,
+      stockBefore,
+      stockAfter,
+    });
+
+    // Use the inventory record's assigned dealer.
+    const dealerId = item.dealer;
+
+    if (stockAfter <= 0) {
+      // Reuse an existing unresolved alert if one exists.
+      const existingAlert = await DealerNotification.findOne({
+        dealer: dealerId,
+        product: item.product,
+        type: 'out_of_stock',
+        isResolved: false,
+      });
+
+      if (!existingAlert) {
+        await DealerNotification.create({
+          dealer: dealerId,
+          product: item.product,
+          customer: null,
+          type: 'out_of_stock',
+          message: `${freshProduct.title || freshProduct.name || 'This product'} is out of stock. Kindly restock the product.`,
+          isRead: false,
+          isResolved: false,
+        });
+
+        console.log('[INVENTORY] Dealer restock alert created.');
+      }
+    } else {
+      // Stock is available: resolve any outstanding restock alert.
+      await DealerNotification.updateMany(
+        {
+          dealer: dealerId,
+          product: item.product,
+          type: 'out_of_stock',
+          isResolved: false,
+        },
+        {
+          $set: {
+            isResolved: true,
+            isRead: true,
+          },
+        }
+      );
+    }
+
+    // Keep the existing customer WhatsApp notification cycle.
+    if (stockBefore <= 0 && stockAfter > 0) {
+      notifyBackInStock(freshProduct).catch((err) => {
+        console.error('[RESTOCK] WhatsApp notification error:', err);
+      });
+    }
+
+    return res.json({
       inventory: withAvailableList([item.toObject()])[0],
       message: 'Inventory updated',
     });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('[INVENTORY] Update failed:', err);
+    return res.status(500).json({ message: err.message });
   }
 };
+
+
 
 /* ── POST /api/inventory — create inventory row (dealer or admin) ────── */
 export const createInventory = async (req, res) => {
   try {
     const { product, dealer, fulfillmentNode, onHand = 0, damaged = 0, blocked = 0, sku, isActive } = req.body;
-
+   
     for (const [value, label] of [[product, 'product'], [dealer, 'dealer'], [fulfillmentNode, 'fulfillment node']]) {
       const v = validateObjectId(value, label);
       if (v.error) return res.status(400).json({ message: v.error });
